@@ -27,7 +27,7 @@ from typing import Optional
 
 import requests
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 
 def log(msg: str):
@@ -448,6 +448,12 @@ def align_lrc_to_audio(lrc_lines: list[dict], audio_path: Path,
     words: list[dict] = []
     fallback_count = 0
 
+    # Порог для разбиения строки при большом внутристрочном зазоре.
+    # Если между двумя соседними словами одной LRC-строки > 5с тишины,
+    # вставляем _line_end перед словом после паузы — зазор становится
+    # межстрочным и gap_acoustic его поймает для счётчика/проигрыша.
+    _INTRA_GAP_SPLIT = 5.0
+
     if abs(len(all_aligned) - total_lrc_words) <= _TOLERANCE:
         # ── Основной путь: последовательное назначение ───────────────────────
         ptr = 0
@@ -460,6 +466,13 @@ def align_lrc_to_audio(lrc_lines: list[dict], audio_path: Path,
                             "end":   w.get("end", w["start"] + 0.1)}
                            for w in line_ws]
                 entries[-1]["_line_end"] = True
+                # Если внутри строки есть большая пауза — разбиваем
+                for j in range(len(entries) - 1):
+                    gap = entries[j + 1]["start"] - entries[j]["end"]
+                    if gap >= _INTRA_GAP_SPLIT:
+                        entries[j]["_line_end"] = True
+                        log(f"Внутристрочный зазор {gap:.1f}с после «{entries[j]['word']}» "
+                            f"— разбиваю строку")
                 words.extend(entries)
             else:
                 fallback_count += 1
@@ -511,6 +524,21 @@ def align_lrc_to_audio(lrc_lines: list[dict], audio_path: Path,
     if not words:
         log("Alignment вернул пустой результат — применяю равномерное распределение.")
         return _lrc_to_words_uniform(lrc_lines, total_duration)
+
+    # Сплит строк с большой паузой внутри: если между двумя словами одной LRC-строки
+    # зазор >= порога (инструментальная вставка внутри строки), ставим _line_end до паузы.
+    # Без этого детектор межстрочных пауз не видит проигрыш и счётчик не появляется.
+    _INTRA_GAP_SPLIT = 7.0
+    split_count = 0
+    for i in range(1, len(words)):
+        prev = words[i - 1]
+        if not prev.get("_line_end"):
+            gap = words[i]["start"] - prev.get("end", prev["start"])
+            if gap >= _INTRA_GAP_SPLIT:
+                prev["_line_end"] = True
+                split_count += 1
+    if split_count:
+        log(f"Разделено {split_count} строк по внутренним паузам ≥{_INTRA_GAP_SPLIT}с.")
 
     log(f"Синхронизировано {len(words)} слов.")
     return words
@@ -748,15 +776,20 @@ def ass_karaoke_2line(words: list[dict],
         si = _split_index(line_words)
         parts = []
         cursor = line_start
+        _MAX_FILL = 4.0  # кап заливки слова: WhisperX CTC растягивает конец слова
+        # на всю паузу после него — это даёт рассинхрон (заливка идёт 5-10s пока
+        # певец уже на следующих словах). Остаток перекладываем в \k-паузу перед
+        # следующим словом, чтобы суммарный таймлайн ASS оставался точным.
         for wi, w in enumerate(line_words):
             if wi == si:
                 parts.append("\\N")
             gap_cs = max(0, int((w["start"] - cursor) * 100))
             if gap_cs > 0:
                 parts.append(f"{{\\k{gap_cs}}}")
-            dur_cs = max(1, int((w["end"] - w["start"]) * 100))
+            eff_end = min(w["end"], w["start"] + _MAX_FILL)
+            dur_cs = max(1, int((eff_end - w["start"]) * 100))
             parts.append(f"{{\\kf{dur_cs}}}{w['word']} ")
-            cursor = w["end"]
+            cursor = eff_end
         return "".join(parts).rstrip()
 
     def _fade(dur_ms: int, fade_in: bool = True, fade_out: bool = True) -> str:
