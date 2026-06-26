@@ -59,6 +59,11 @@ python karaoke.py song.mp3 --lang ru --force-whisperx
 
 # Указать метаданные вручную (если в файле неверные теги)
 python karaoke.py track.mp3 --artist "Кино" --title "Группа крови"
+
+# Просто скачать видео без генерации субтитров (YouTube, VK, Rutube, ...)
+python karaoke.py https://www.youtube.com/watch?v=... --only-download -o ~/Downloads
+python karaoke.py https://vkvideo.ru/video... --only-download -o ~/Downloads
+python karaoke.py https://rutube.ru/video/... --only-download -o ~/Downloads
 ```
 
 ### Параметры
@@ -71,6 +76,7 @@ python karaoke.py track.mp3 --artist "Кино" --title "Группа крови
 | `--bg FILE` | авто | Фоновое изображение. Для MP3 — заменяет дефолтный `karaoke_bg.png`; для видео/URL — переопределяет исходное видео статичной картинкой |
 | `--artist` | из тегов | Исполнитель (переопределяет метаданные файла) |
 | `--title` | из тегов | Название трека (переопределяет метаданные файла) |
+| `--only-download` | выкл | Только скачать видео по URL в `--output` и выйти, без субтитров (поддерживает YouTube, VK, Rutube и любые источники yt-dlp) |
 | `--force-whisperx` | выкл | Пропустить lrclib, принудительно распознать текст через WhisperX |
 | `--no-whisper` | выкл | Не запускать WhisperX (только lrclib с равномерным тайм-кодом) |
 | `--use-yt-subs` | выкл | Использовать YouTube субтитры (только если есть word-level timing) |

@@ -27,7 +27,7 @@ from typing import Optional
 
 import requests
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 
 def log(msg: str):
@@ -1011,8 +1011,38 @@ WMA может не работать — зависит от torchaudio-бэке
                         help="Исполнитель (переопределяет метаданные файла)")
     parser.add_argument("--title", default=None,
                         help="Название трека (переопределяет метаданные файла)")
+    parser.add_argument("--only-download", action="store_true",
+                        help="Только скачать видео по URL в папку --output и выйти, "
+                             "без разделения вокала и генерации субтитров")
     parser.add_argument("--version", action="version", version=f"karaoke-cli {VERSION}")
     args = parser.parse_args()
+
+    # ── Режим --only-download ─────────────────────────────────────────────────
+    if args.only_download:
+        if not is_url(args.input):
+            err("--only-download работает только с URL")
+            sys.exit(1)
+        import yt_dlp
+        output_dir = Path(args.output).expanduser().resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        opts = {
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "outtmpl": str(output_dir / "%(title)s.%(ext)s"),
+            "noplaylist": True,
+            "retries": 3,
+            "extractor_retries": 2,
+            "socket_timeout": 60,
+        }
+        log(f"Скачиваю: {args.input}")
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(args.input, download=True)
+            filename = ydl.prepare_filename(info)
+        saved = Path(filename)
+        if not saved.exists():
+            candidates = sorted(output_dir.glob("*.mp4")) + sorted(output_dir.glob("*.mkv")) + sorted(output_dir.glob("*.webm"))
+            saved = candidates[-1] if candidates else saved
+        log(f"Сохранено: {saved}")
+        sys.exit(0)
 
     work_dir = Path(tempfile.mkdtemp(prefix="karaoke_"))
     output_dir = Path(args.output).expanduser().resolve()
