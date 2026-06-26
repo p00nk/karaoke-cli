@@ -27,7 +27,7 @@ from typing import Optional
 
 import requests
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 
 def log(msg: str):
@@ -409,7 +409,6 @@ def align_lrc_to_audio(lrc_lines: list[dict], audio_path: Path,
     #    последовательно (по количеству слов в строке), минуя LRC-тайминги полностью.
     #    LRC-окна нужны только как fallback когда WhisperX вернул другое число слов.
     all_lrc_text = " ".join(l["text"] for l in lrc_lines)
-    segments_align = [{"start": 0.0, "end": total_duration, "text": all_lrc_text}]
 
     # LRC-окна для назначения слов строкам (не для самого выравнивания)
     lrc_segments = []
@@ -421,10 +420,37 @@ def align_lrc_to_audio(lrc_lines: list[dict], audio_path: Path,
 
     audio = whisperx.load_audio(str(audio_path))
 
+    # Обрезка вступления: при длинном инструментальном вступлении CTC-alignment
+    # нестабилен — может разместить первые слова в инструментале, а не на вокале.
+    # Если первое слово LRC ожидается позднее _INTRO_MARGIN+2с, передаём в alignment
+    # аудио начиная с first_lrc_time - _INTRO_MARGIN; метки сдвигаются обратно.
+    _INTRO_MARGIN = 5.0
+    _SR = 16000
+    first_lrc_time = lrc_lines[0]["time"] if lrc_lines else 0.0
+    intro_trim = (max(0.0, first_lrc_time - _INTRO_MARGIN)
+                  if first_lrc_time > _INTRO_MARGIN + 2.0 else 0.0)
+    if intro_trim > 0.0:
+        log(f"Вступление {intro_trim:.1f}с — обрезаю аудио перед CTC-выравниванием "
+            f"(первое слово LRC ожидается в {first_lrc_time:.1f}с).")
+        audio_for_align = audio[int(intro_trim * _SR):]
+        seg_end = max(0.1, total_duration - intro_trim)
+    else:
+        audio_for_align = audio
+        seg_end = total_duration
+
+    segments_align = [{"start": 0.0, "end": seg_end, "text": all_lrc_text}]
+
     try:
         align_model, align_meta = whisperx.load_align_model(language_code=lang, device="cpu")
-        result = whisperx.align(segments_align, align_model, align_meta, audio, "cpu",
+        result = whisperx.align(segments_align, align_model, align_meta, audio_for_align, "cpu",
                                 return_char_alignments=False)
+        if intro_trim > 0.0:
+            for seg in result.get("segments", []):
+                for w in seg.get("words", []):
+                    if w.get("start") is not None:
+                        w["start"] += intro_trim
+                    if w.get("end") is not None:
+                        w["end"] += intro_trim
     except Exception as e:
         log(f"Forced alignment не удался ({e}) — применяю равномерное распределение по строкам.")
         return _lrc_to_words_uniform(lrc_lines, total_duration)
