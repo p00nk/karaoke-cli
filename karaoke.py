@@ -27,7 +27,7 @@ from typing import Optional
 
 import requests
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 
 
 def log(msg: str):
@@ -445,12 +445,20 @@ def align_lrc_to_audio(lrc_lines: list[dict], audio_path: Path,
         log(f"Не удалось загрузить модель выравнивания ({e}) — равномерное распределение.")
         return _lrc_to_words_uniform(lrc_lines, total_duration)
 
-    all_aligned = []
-    for si, (s_idx, e_idx) in enumerate(section_list):
-        sec_lines = lrc_lines[s_idx:e_idx + 1]
+    # CTC и назначение слов выполняются независимо для каждой секции.
+    # Это предотвращает накопление дрейфа: ошибка подсчёта слов в одной секции
+    # не смещает назначение строк в последующих секциях.
+    words: list[dict] = []
+    _INTRA_GAP_SPLIT = 5.0
 
-        # Аудио-окно: от начала секции (−margin) до начала следующей (−margin) или конца трека.
-        a_start = max(0.0, sec_lines[0]["time"] - _SECTION_MARGIN)
+    for si, (s_idx, e_idx) in enumerate(section_list):
+        sec_lrc_lines   = lrc_lines[s_idx:e_idx + 1]
+        sec_lrc_segs    = lrc_segments[s_idx:e_idx + 1]
+        sec_word_counts = [len(l["text"].split()) for l in sec_lrc_lines]
+        total_sec_words = sum(sec_word_counts)
+
+        # ── Аудио-окно секции ───────────────────────────────────────────────
+        a_start = max(0.0, sec_lrc_lines[0]["time"] - _SECTION_MARGIN)
         if si + 1 < len(section_list):
             a_end = min(total_duration,
                         lrc_lines[section_list[si + 1][0]]["time"] - _SECTION_MARGIN)
@@ -458,7 +466,9 @@ def align_lrc_to_audio(lrc_lines: list[dict], audio_path: Path,
             a_end = total_duration
         a_end = max(a_start + 1.0, a_end)
 
-        sec_text     = " ".join(l["text"] for l in sec_lines)
+        # ── CTC forced alignment секции ─────────────────────────────────────
+        sec_aligned: list[dict] = []
+        sec_text     = " ".join(l["text"] for l in sec_lrc_lines)
         sec_duration = a_end - a_start
         sec_audio    = audio[int(a_start * _SR):int(a_end * _SR)]
         sec_seg      = [{"start": 0.0, "end": sec_duration, "text": sec_text}]
@@ -466,7 +476,7 @@ def align_lrc_to_audio(lrc_lines: list[dict], audio_path: Path,
         try:
             sec_result = whisperx.align(sec_seg, align_model, align_meta, sec_audio, "cpu",
                                         return_char_alignments=False)
-            sec_words = sorted(
+            sec_aligned = sorted(
                 [{"word": w["word"], "start": w["start"] + a_start,
                   "end": w.get("end", w["start"] + 0.1) + a_start}
                  for seg2 in sec_result.get("segments", [])
@@ -474,110 +484,91 @@ def align_lrc_to_audio(lrc_lines: list[dict], audio_path: Path,
                  if w.get("word", "").strip() and w.get("start") is not None],
                 key=lambda w: w["start"],
             )
-            all_aligned.extend(sec_words)
-            log(f"Секция {si + 1}/{len(section_list)}: {len(sec_words)} слов "
+            log(f"Секция {si + 1}/{len(section_list)}: {len(sec_aligned)} слов "
                 f"({a_start:.1f}–{a_end:.1f}с).")
         except Exception as e:
             log(f"Секция {si + 1}/{len(section_list)} ({a_start:.1f}–{a_end:.1f}с): "
-                f"ошибка alignment ({e}) — пропущена.")
+                f"ошибка alignment ({e}).")
 
-    if not all_aligned:
-        log("Все секции: alignment не дал результата — равномерное распределение.")
-        return _lrc_to_words_uniform(lrc_lines, total_duration)
+        # ── Назначение слов строкам секции ──────────────────────────────────
+        sec_tolerance = max(3, total_sec_words // 15)
+        sec_words: list[dict] = []
+        sec_fallback  = 0
 
-    all_aligned.sort(key=lambda w: w["start"])
-
-    # Последовательное назначение: каждой LRC-строке отводится ровно столько слов,
-    # сколько в ней написано. Это точнее time-window matching когда LRC-метки неверны
-    # (что типично для треков с инструментальными секциями не учтёнными в lrclib).
-    lrc_word_counts = [len(l["text"].split()) for l in lrc_lines]
-    total_lrc_words = sum(lrc_word_counts)
-    _TOLERANCE      = max(3, total_lrc_words // 15)   # ≤6.7% расхождения
-
-    words: list[dict] = []
-    fallback_count = 0
-
-    # Порог для разбиения строки при большом внутристрочном зазоре.
-    # Если между двумя соседними словами одной LRC-строки > 5с тишины,
-    # вставляем _line_end перед словом после паузы — зазор становится
-    # межстрочным и gap_acoustic его поймает для счётчика/проигрыша.
-    _INTRA_GAP_SPLIT = 5.0
-
-    if abs(len(all_aligned) - total_lrc_words) <= _TOLERANCE:
-        # ── Основной путь: последовательное назначение ───────────────────────
-        ptr = 0
-        for lrc_line, wc in zip(lrc_lines, lrc_word_counts):
-            line_ws = all_aligned[ptr:ptr + wc]
-            ptr += wc
-            if line_ws:
-                entries = [{"word": w["word"].strip(),
-                            "start": w["start"],
-                            "end":   w.get("end", w["start"] + 0.1)}
-                           for w in line_ws]
-                entries[-1]["_line_end"] = True
-                # Если внутри строки есть большая пауза — разбиваем
-                for j in range(len(entries) - 1):
-                    gap = entries[j + 1]["start"] - entries[j]["end"]
-                    if gap >= _INTRA_GAP_SPLIT:
-                        entries[j]["_line_end"] = True
-                        log(f"Внутристрочный зазор {gap:.1f}с после «{entries[j]['word']}» "
-                            f"— разбиваю строку")
-                words.extend(entries)
-            else:
-                fallback_count += 1
-    else:
-        # ── Запасной путь: time-window matching (числа слов разошлись) ───────
-        log(f"Расхождение числа слов ({len(all_aligned)} vs {total_lrc_words}) "
-            f"— time-window matching.")
-        word_ptr = 0
-        for lrc_line, seg in zip(lrc_lines, lrc_segments):
-            t_start, t_end = seg["start"], seg["end"]
-            line_ws = []
-            ptr = word_ptr
-            while ptr < len(all_aligned):
-                w = all_aligned[ptr]
-                if w["start"] < t_start - 0.3:
-                    ptr += 1
-                    continue
-                if w["start"] < t_end:
-                    line_ws.append(w)
-                    ptr += 1
+        if sec_aligned and abs(len(sec_aligned) - total_sec_words) <= sec_tolerance:
+            # Последовательное назначение внутри секции
+            ptr = 0
+            for lrc_line, wc in zip(sec_lrc_lines, sec_word_counts):
+                line_ws = sec_aligned[ptr:ptr + wc]
+                ptr += wc
+                if line_ws:
+                    entries = [{"word": w["word"].strip(),
+                                "start": w["start"],
+                                "end":   w.get("end", w["start"] + 0.1)}
+                               for w in line_ws]
+                    entries[-1]["_line_end"] = True
+                    for j in range(len(entries) - 1):
+                        gap = entries[j + 1]["start"] - entries[j]["end"]
+                        if gap >= _INTRA_GAP_SPLIT:
+                            entries[j]["_line_end"] = True
+                            log(f"Внутристрочный зазор {gap:.1f}с после "
+                                f"«{entries[j]['word']}» — разбиваю строку")
+                    sec_words.extend(entries)
                 else:
-                    break
-            word_ptr = ptr
-            if line_ws:
-                entries = [{"word": w["word"].strip(),
-                            "start": w["start"],
-                            "end":   w.get("end", w["start"] + 0.1)}
-                           for w in line_ws]
-                entries[-1]["_line_end"] = True
-                words.extend(entries)
-            else:
-                fallback_count += 1
-                line_text = lrc_line["text"].split()
-                if not line_text:
-                    continue
-                dur   = max(0.1, t_end - t_start)
-                w_dur = dur / len(line_text)
-                for j, w in enumerate(line_text):
-                    entry = {"word": w,
-                             "start": t_start + j * w_dur,
-                             "end":   t_start + (j + 1) * w_dur}
-                    if j == len(line_text) - 1:
-                        entry["_line_end"] = True
-                    words.append(entry)
+                    sec_fallback += 1
+        else:
+            # Time-window fallback для секции
+            reason = (f"{len(sec_aligned)} vs {total_sec_words} слов"
+                      if sec_aligned else "нет результата CTC")
+            log(f"Секция {si + 1}: {reason} — time-window matching.")
+            word_ptr = 0
+            for lrc_line, lseg in zip(sec_lrc_lines, sec_lrc_segs):
+                t_start, t_end = lseg["start"], lseg["end"]
+                line_ws = []
+                ptr = word_ptr
+                while ptr < len(sec_aligned):
+                    w = sec_aligned[ptr]
+                    if w["start"] < t_start - 0.3:
+                        ptr += 1
+                        continue
+                    if w["start"] < t_end:
+                        line_ws.append(w)
+                        ptr += 1
+                    else:
+                        break
+                word_ptr = ptr
+                if line_ws:
+                    entries = [{"word": w["word"].strip(),
+                                "start": w["start"],
+                                "end":   w.get("end", w["start"] + 0.1)}
+                               for w in line_ws]
+                    entries[-1]["_line_end"] = True
+                    sec_words.extend(entries)
+                else:
+                    sec_fallback += 1
+                    line_text = lrc_line["text"].split()
+                    if not line_text:
+                        continue
+                    dur   = max(0.1, t_end - t_start)
+                    w_dur = dur / len(line_text)
+                    for j, tw in enumerate(line_text):
+                        entry = {"word": tw,
+                                 "start": t_start + j * w_dur,
+                                 "end":   t_start + (j + 1) * w_dur}
+                        if j == len(line_text) - 1:
+                            entry["_line_end"] = True
+                        sec_words.append(entry)
 
-    if fallback_count:
-        log(f"Пропущено {fallback_count} строк при назначении слов.")
+        if sec_fallback:
+            log(f"Секция {si + 1}: пропущено {sec_fallback} строк при назначении.")
+        words.extend(sec_words)
 
     if not words:
         log("Alignment вернул пустой результат — применяю равномерное распределение.")
         return _lrc_to_words_uniform(lrc_lines, total_duration)
 
-    # Дополнительный проход по time-window fallback пути: тот же сплит внутристрочных
-    # пауз, что и в основном пути выше, но уже после финальной сборки words.
-    # Нужен на случай если time-window fallback тоже даёт строки с большими паузами.
-    _INTRA_GAP_SPLIT = 5.0
+    # Пост-обработка: разбить строки с большими внутристрочными паузами
+    # (актуально для строк из time-window-fallback пути)
     split_count = 0
     for i in range(1, len(words)):
         prev = words[i - 1]
@@ -587,7 +578,8 @@ def align_lrc_to_audio(lrc_lines: list[dict], audio_path: Path,
                 prev["_line_end"] = True
                 split_count += 1
     if split_count:
-        log(f"Дополнительно разделено {split_count} строк по внутренним паузам ≥{_INTRA_GAP_SPLIT}с.")
+        log(f"Дополнительно разделено {split_count} строк по внутренним паузам "
+            f"≥{_INTRA_GAP_SPLIT}с.")
 
     log(f"Синхронизировано {len(words)} слов.")
     return words
