@@ -27,7 +27,7 @@ from typing import Optional
 
 import requests
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 
 def log(msg: str):
@@ -602,7 +602,7 @@ Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackC
 Style: Karaoke,Arial,40,&H0000FFFF,&H00FFFFFF,&H00000000,&HB4000000,1,0,0,0,100,100,0,0,1,3,2,2,20,20,40,1
 Style: Upcoming,Arial,40,&H00A0A0A0,&H00A0A0A0,&H00000000,&HB4000000,1,0,0,0,100,100,0,0,1,2,2,2,20,20,145,1
 Style: Interlude,Arial,52,&H0000AAFF,&H0000AAFF,&H00000000,&HB4000000,1,0,0,0,100,100,2,0,1,3,2,5,40,40,0,1
-Style: Countdown,Arial,60,&H00FFFFFF,&H00FFFFFF,&H00000000,&H90000000,1,0,0,0,100,100,20,0,1,1,2,2,20,20,200,1
+Style: Countdown,Arial,42,&H00FFFFFF,&H00FFFFFF,&H00000000,&H90000000,1,0,0,0,100,100,14,0,1,1,1,2,20,20,200,1
 Style: IntroArtist,Arial,64,&H00FFFFFF,&H00FFFFFF,&H00000000,&HB4000000,1,0,0,0,100,100,2,0,1,3,2,5,40,40,0,1
 Style: IntroTitle,Arial,46,&H00C8C8FF,&H00C8C8FF,&H00000000,&H80000000,0,1,0,0,100,100,1,0,1,3,2,5,40,40,0,1
 
@@ -759,14 +759,17 @@ def ass_karaoke_2line(words: list[dict],
             cursor = w["end"]
         return "".join(parts).rstrip()
 
-    def _fade(dur_ms: int) -> str:
-        """Возвращает \fad(in,out) — плавное появление и исчезновение за 500мс.
-        Для коротких событий fade делится пополам, чтобы не пересекались."""
+    def _fade(dur_ms: int, fade_in: bool = True, fade_out: bool = True) -> str:
+        """Возвращает \fad(in,out). По умолчанию 500мс; для коротких событий делится пополам."""
         if dur_ms <= 0:
             return ""
         half = max(1, dur_ms // 2)
-        fade = min(500, half)
-        return f"\\fad({fade},{fade})"
+        f = min(500, half)
+        fi = f if fade_in else 0
+        fo = f if fade_out else 0
+        if fi == 0 and fo == 0:
+            return ""
+        return f"\\fad({fi},{fo})"
 
     # ── Интро: исполнитель и название ─────────────────────────────────────────
     if intro_artist or intro_title:
@@ -792,7 +795,7 @@ def ass_karaoke_2line(words: list[dict],
         events.append(
             f"Dialogue: 0,{_ts(up_from)},{_ts(up_to)},"
             f"Upcoming,,0,0,0,,"
-            f"{{\\pos({_X},{_Y_BOT}){_fade(pf_dur_ms)}}}"
+            f"{{\\pos({_X},{_Y_BOT}){_fade(pf_dur_ms, fade_in=True, fade_out=False)}}}"
             f"{_upcoming_text(lines[0])}"
         )
 
@@ -836,7 +839,7 @@ def ass_karaoke_2line(words: list[dict],
             events.append(
                 f"Dialogue: 0,{_ts(line_start)},{_ts(kend)},"
                 f"Karaoke,,0,0,0,,"
-                f"{{\\pos({_X},{karaoke_y}){_fade(ev_dur_ms)}}}{ktxt}"
+                f"{{\\pos({_X},{karaoke_y}){_fade(ev_dur_ms, fade_in=False, fade_out=True)}}}{ktxt}"
             )
 
         kend_by_slot[slot] = kend
@@ -855,7 +858,7 @@ def ass_karaoke_2line(words: list[dict],
             events.append(
                 f"Dialogue: 0,{_ts(upcoming_from)},{_ts(upcoming_to)},"
                 f"Upcoming,,0,0,0,,"
-                f"{{\\pos({_X},{upcoming_y}){_fade(up_dur_ms)}}}"
+                f"{{\\pos({_X},{upcoming_y}){_fade(up_dur_ms, fade_in=True, fade_out=False)}}}"
                 f"{_upcoming_text(next_line)}"
             )
 
