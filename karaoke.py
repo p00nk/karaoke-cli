@@ -525,10 +525,10 @@ def align_lrc_to_audio(lrc_lines: list[dict], audio_path: Path,
         log("Alignment вернул пустой результат — применяю равномерное распределение.")
         return _lrc_to_words_uniform(lrc_lines, total_duration)
 
-    # Сплит строк с большой паузой внутри: если между двумя словами одной LRC-строки
-    # зазор >= порога (инструментальная вставка внутри строки), ставим _line_end до паузы.
-    # Без этого детектор межстрочных пауз не видит проигрыш и счётчик не появляется.
-    _INTRA_GAP_SPLIT = 7.0
+    # Дополнительный проход по time-window fallback пути: тот же сплит внутристрочных
+    # пауз, что и в основном пути выше, но уже после финальной сборки words.
+    # Нужен на случай если time-window fallback тоже даёт строки с большими паузами.
+    _INTRA_GAP_SPLIT = 5.0
     split_count = 0
     for i in range(1, len(words)):
         prev = words[i - 1]
@@ -538,7 +538,7 @@ def align_lrc_to_audio(lrc_lines: list[dict], audio_path: Path,
                 prev["_line_end"] = True
                 split_count += 1
     if split_count:
-        log(f"Разделено {split_count} строк по внутренним паузам ≥{_INTRA_GAP_SPLIT}с.")
+        log(f"Дополнительно разделено {split_count} строк по внутренним паузам ≥{_INTRA_GAP_SPLIT}с.")
 
     log(f"Синхронизировано {len(words)} слов.")
     return words
