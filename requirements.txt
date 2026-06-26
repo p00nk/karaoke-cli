@@ -1,0 +1,18 @@
+# Скачивание видео
+yt-dlp
+
+# Разделение вокала (Facebook/Meta)
+demucs
+
+# Транскрипция + выравнивание (fallback если нет LRC)
+whisperx
+
+# HTTP-запросы к lrclib.net
+requests
+
+# Чтение тегов аудиофайлов (корректная кодировка CP1251 для русских MP3)
+mutagen
+
+# PyTorch CPU (AMD/WSL2 — без CUDA/ROCm)
+# Устанавливать отдельной командой (см. install.sh):
+# pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu

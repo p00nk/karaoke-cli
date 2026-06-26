@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.env
+venv/
+.venv/
+
+# Output and temp files
+output/
+tmp/
+*.mp4
+*.mkv
+*.ass
+*.wav
+*.flac
+
+# OS
+.DS_Store
+Thumbs.db
