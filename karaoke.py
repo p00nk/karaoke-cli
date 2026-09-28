@@ -27,7 +27,7 @@ from typing import Optional
 
 import requests
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 
 
 def log(msg: str):
@@ -35,6 +35,32 @@ def log(msg: str):
 
 def err(msg: str):
     print(f"\033[31m[ERROR]\033[0m {msg}", file=sys.stderr, flush=True)
+
+
+# JS-рантаймы для решения YouTube JS-challenge (без них — HTTP 403)
+_YTDLP_JS_RUNTIMES = {"deno": {}, "node": {}, "bun": {}, "quickjs": {}}
+
+
+class DownloadError(Exception):
+    """Ошибка скачивания (yt-dlp)."""
+
+
+class _SilentLogger:
+    """Глушит вывод yt-dlp: ошибки сообщаем сами через err()."""
+    def debug(self, msg): pass
+    def info(self, msg): pass
+    def warning(self, msg): pass
+    def error(self, msg): pass
+
+
+def _ytdlp_hint(e: Exception) -> str:
+    msg = str(e)
+    if "403" in msg:
+        return ("YouTube отклонил запрос (HTTP 403). Обновите yt-dlp: "
+                "pip install -U \"yt-dlp[default]\"; нужен JS-рантайм (deno или node).")
+    if "Sign in" in msg or "confirm you" in msg:
+        return "YouTube требует авторизацию — попробуйте позже или другой источник."
+    return "Проверьте URL и сеть; обновите yt-dlp: pip install -U \"yt-dlp[default]\"."
 
 
 def is_url(s: str) -> bool:
@@ -58,6 +84,8 @@ def download_video(url: str, work_dir: Path,
         "socket_timeout": 30,
         "quiet": True,
         "no_warnings": True,
+        "js_runtimes": _YTDLP_JS_RUNTIMES,
+        "logger": _SilentLogger(),
     }
     if download_subs:
         opts.update({
@@ -69,8 +97,11 @@ def download_video(url: str, work_dir: Path,
         })
 
     log(f"Скачиваю: {url}")
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+    except yt_dlp.utils.DownloadError as e:
+        raise DownloadError(f"{str(e).removeprefix('ERROR: ')}\n{_ytdlp_hint(e)}") from None
 
     # При плейлисте info содержит вложенный 'entries' — берём первый элемент
     if info and info.get("_type") == "playlist":
@@ -1109,11 +1140,17 @@ WMA может не работать — зависит от torchaudio-бэке
             "retries": 3,
             "extractor_retries": 2,
             "socket_timeout": 60,
+            "js_runtimes": _YTDLP_JS_RUNTIMES,
         }
         log(f"Скачиваю: {args.input}")
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(args.input, download=True)
-            filename = ydl.prepare_filename(info)
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(args.input, download=True)
+                filename = ydl.prepare_filename(info)
+        except yt_dlp.utils.DownloadError as e:
+            err(f"Не удалось скачать: {e}")
+            err(_ytdlp_hint(e))
+            sys.exit(1)
         saved = Path(filename)
         if not saved.exists():
             candidates = sorted(output_dir.glob("*.mp4")) + sorted(output_dir.glob("*.mkv")) + sorted(output_dir.glob("*.webm"))
@@ -1236,6 +1273,12 @@ WMA может не работать — зависит от torchaudio-бэке
 
         log(f"\033[32mГотово!\033[0m {out_path}")
 
+    except DownloadError as e:
+        err(f"Не удалось скачать: {e}")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        err("Прервано пользователем")
+        sys.exit(130)
     finally:
         if not args.keep_tmp:
             import shutil
