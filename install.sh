@@ -17,7 +17,7 @@ echo "[3/4] PyTorch CPU (для AMD/WSL2 без GPU)..."
 .venv/bin/pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu -q
 
 echo "[4/4] Зависимости проекта..."
-.venv/bin/pip install yt-dlp demucs requests whisperx -q
+.venv/bin/pip install -U "yt-dlp[default]" demucs requests whisperx -q
 
 echo ""
 echo "Установка завершена!"

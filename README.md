@@ -20,7 +20,8 @@ MP4-видео с двухстрочными ASS-субтитрами:
 
 - Python 3.10+
 - ffmpeg
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — скачивание видео
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) `[default]` — скачивание видео (свежая версия)
+- JS-рантайм для YouTube: [deno](https://deno.com) или Node.js
 - [demucs](https://github.com/facebookresearch/demucs) — отделение вокала
 - [whisperx](https://github.com/m-bain/whisperX) — транскрипция и forced alignment
 - [requests](https://pypi.org/project/requests/), [mutagen](https://pypi.org/project/mutagen/)
@@ -117,6 +118,15 @@ python karaoke.py https://rutube.ru/video/... --only-download -o ~/Downloads
 **URL:** YouTube, а также любые источники, поддерживаемые yt-dlp.
 
 > WMA может не работать — зависит от torchaudio-бэкенда в системе.
+
+## Решение проблем
+
+**`HTTP Error 403: Forbidden` при скачивании с YouTube** — устаревший yt-dlp или нет JS-рантайма:
+
+```bash
+pip install -U "yt-dlp[default]"
+node --version || curl -fsSL https://deno.land/install.sh | sh
+```
 
 ## Версии
 
